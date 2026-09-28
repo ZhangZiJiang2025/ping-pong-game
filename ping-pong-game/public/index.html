@@ -1,0 +1,348 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>オンライン卓球ゲーム</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: 'Arial', sans-serif;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      min-height: 100vh;
+      color: white;
+    }
+
+    #container {
+      text-align: center;
+    }
+
+    h1 {
+      margin-bottom: 20px;
+      font-size: 2.5em;
+      text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
+    }
+
+    #gameCanvas {
+      border: 3px solid white;
+      background: #1a1a2e;
+      box-shadow: 0 10px 30px rgba(0,0,0,0.3);
+      display: block;
+      margin: 0 auto;
+    }
+
+    #info {
+      margin-top: 20px;
+      font-size: 1.2em;
+      min-height: 30px;
+    }
+
+    #controls {
+      margin-top: 15px;
+    }
+
+    button {
+      background: #ff6b6b;
+      color: white;
+      border: none;
+      padding: 12px 30px;
+      font-size: 1.1em;
+      border-radius: 25px;
+      cursor: pointer;
+      margin: 5px;
+      transition: all 0.3s;
+      box-shadow: 0 4px 6px rgba(0,0,0,0.2);
+    }
+
+    button:hover {
+      background: #ee5a52;
+      transform: translateY(-2px);
+      box-shadow: 0 6px 8px rgba(0,0,0,0.3);
+    }
+
+    button:disabled {
+      background: #666;
+      cursor: not-allowed;
+      transform: none;
+    }
+
+    #difficultySelect {
+      margin-top: 10px;
+    }
+
+    select {
+      padding: 8px 15px;
+      font-size: 1em;
+      border-radius: 15px;
+      border: none;
+      background: white;
+      color: #333;
+      cursor: pointer;
+    }
+
+    .score-display {
+      font-size: 2em;
+      margin: 15px 0;
+      font-weight: bold;
+      text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
+    }
+
+    #status {
+      font-size: 1.5em;
+      margin: 10px 0;
+      font-weight: bold;
+    }
+
+    .waiting {
+      animation: pulse 2s infinite;
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.5; }
+    }
+
+    .instructions {
+      margin-top: 15px;
+      font-size: 0.9em;
+      opacity: 0.9;
+    }
+  </style>
+</head>
+<body>
+  <div id="container">
+    <h1>🏓 オンライン卓球ゲーム</h1>
+    <div class="score-display" id="scoreDisplay">0 - 0</div>
+    <canvas id="gameCanvas" width="800" height="600"></canvas>
+    <div id="status"></div>
+    <div id="info">接続中...</div>
+    <div id="controls">
+      <button id="startBtn" style="display:none;" disabled>スタート</button>
+      <button id="restartBtn" style="display:none;">再スタート</button>
+    </div>
+    <div id="difficultySelect" style="display:none;">
+      <label>難易度: </label>
+      <select id="difficulty">
+        <option value="easy">簡単</option>
+        <option value="medium" selected>普通</option>
+        <option value="hard">難しい</option>
+      </select>
+    </div>
+    <div class="instructions">
+      矢印キー ↑↓ でパドルを操作
+    </div>
+  </div>
+
+  <script>
+    const canvas = document.getElementById('gameCanvas');
+    const ctx = canvas.getContext('2d');
+    const info = document.getElementById('info');
+    const status = document.getElementById('status');
+    const startBtn = document.getElementById('startBtn');
+    const restartBtn = document.getElementById('restartBtn');
+    const scoreDisplay = document.getElementById('scoreDisplay');
+    const difficultySelect = document.getElementById('difficultySelect');
+    const difficultyDropdown = document.getElementById('difficulty');
+
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const ws = new WebSocket(`${protocol}//${window.location.host}`);
+
+    let playerIndex = null;
+    let players = [{ y: 250 }, { y: 250 }];
+    let ball = { x: 400, y: 300, vx: 0, vy: 0 };
+    let scores = [0, 0];
+    let gameStarted = false;
+    let myPaddleY = 250;
+    let keys = {};
+
+    ws.onopen = () => {
+      info.textContent = 'サーバーに接続しました';
+    };
+
+    ws.onmessage = (event) => {
+      const data = JSON.parse(event.data);
+
+      switch(data.type) {
+        case 'init':
+          playerIndex = data.playerIndex;
+          info.textContent = playerIndex === 0 ? 'あなたは左側のプレイヤーです' : 'あなたは右側のプレイヤーです';
+          if (playerIndex === 0) {
+            difficultySelect.style.display = 'block';
+          }
+          break;
+
+        case 'waiting':
+          info.textContent = data.message;
+          info.classList.add('waiting');
+          break;
+
+        case 'playerCount':
+          if (data.count === 1) {
+            status.textContent = '相手を待っています...';
+          }
+          break;
+
+        case 'bothReady':
+          status.textContent = '相手が見つかりました！';
+          startBtn.style.display = 'inline-block';
+          startBtn.disabled = false;
+          scores = data.scores;
+          updateScoreDisplay();
+          break;
+
+        case 'start':
+          gameStarted = true;
+          status.textContent = '試合中';
+          startBtn.style.display = 'none';
+          restartBtn.style.display = 'none';
+          difficultySelect.style.display = 'none';
+          break;
+
+        case 'update':
+          ball = data.ball;
+          players = data.players;
+          break;
+
+        case 'score':
+          scores = data.scores;
+          updateScoreDisplay();
+          break;
+
+        case 'gameOver':
+          gameStarted = false;
+          const isWinner = data.winner === playerIndex;
+          status.textContent = isWinner ? 'あなたの勝ち！🎉' : 'あなたの負け';
+          status.style.color = isWinner ? '#4ade80' : '#f87171';
+          restartBtn.style.display = 'inline-block';
+          break;
+
+        case 'opponentLeft':
+          info.textContent = data.message;
+          status.textContent = '';
+          gameStarted = false;
+          startBtn.style.display = 'none';
+          restartBtn.style.display = 'none';
+          scores = [0, 0];
+          updateScoreDisplay();
+          break;
+
+        case 'difficulty':
+          difficultyDropdown.value = data.difficulty;
+          break;
+      }
+    };
+
+    ws.onerror = (error) => {
+      info.textContent = '接続エラーが発生しました';
+    };
+
+    ws.onclose = () => {
+      info.textContent = 'サーバーとの接続が切れました';
+    };
+
+    function updateScoreDisplay() {
+      scoreDisplay.textContent = `${scores[0]} - ${scores[1]}`;
+    }
+
+    startBtn.addEventListener('click', () => {
+      ws.send(JSON.stringify({ type: 'ready' }));
+      startBtn.disabled = true;
+      startBtn.textContent = '相手の準備を待っています...';
+    });
+
+    restartBtn.addEventListener('click', () => {
+      ws.send(JSON.stringify({ type: 'restart' }));
+      restartBtn.disabled = true;
+      restartBtn.textContent = '相手の準備を待っています...';
+      status.textContent = '再戦の準備中...';
+      status.style.color = 'white';
+    });
+
+    difficultyDropdown.addEventListener('change', (e) => {
+      ws.send(JSON.stringify({
+        type: 'difficulty',
+        difficulty: e.target.value
+      }));
+    });
+
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+        e.preventDefault();
+        keys[e.key] = true;
+      }
+    });
+
+    document.addEventListener('keyup', (e) => {
+      if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+        keys[e.key] = false;
+      }
+    });
+
+    function updatePaddle() {
+      if (playerIndex === null) return;
+
+      const speed = 8;
+      if (keys['ArrowUp']) {
+        myPaddleY = Math.max(0, myPaddleY - speed);
+      }
+      if (keys['ArrowDown']) {
+        myPaddleY = Math.min(500, myPaddleY + speed);
+      }
+
+      ws.send(JSON.stringify({
+        type: 'move',
+        y: myPaddleY
+      }));
+    }
+
+    function draw() {
+      ctx.fillStyle = '#1a1a2e';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+      // Center line
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.3)';
+      ctx.setLineDash([10, 10]);
+      ctx.beginPath();
+      ctx.moveTo(400, 0);
+      ctx.lineTo(400, 600);
+      ctx.stroke();
+      ctx.setLineDash([]);
+
+      // Paddles
+      ctx.fillStyle = '#4ade80';
+      if (playerIndex === 0) {
+        ctx.fillRect(20, myPaddleY, 20, 100);
+        ctx.fillStyle = '#f87171';
+        ctx.fillRect(760, players[1]?.y || 250, 20, 100);
+      } else {
+        ctx.fillStyle = '#f87171';
+        ctx.fillRect(20, players[0]?.y || 250, 20, 100);
+        ctx.fillStyle = '#4ade80';
+        ctx.fillRect(760, myPaddleY, 20, 100);
+      }
+
+      // Ball
+      ctx.fillStyle = 'white';
+      ctx.beginPath();
+      ctx.arc(ball.x, ball.y, 10, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    function gameLoop() {
+      updatePaddle();
+      draw();
+      requestAnimationFrame(gameLoop);
+    }
+
+    gameLoop();
+  </script>
+</body>
+</html>
